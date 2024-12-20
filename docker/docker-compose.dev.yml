@@ -5,8 +5,8 @@ services:
     image: postgres:15-alpine
     restart: always
     environment:
-      POSTGRES_PASSWORD: ${PGPASSWORD:-123456}
       POSTGRES_USER: ${PGUSER:-postgres}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-123456}
       POSTGRES_DB: ${PGDATABASE:-postgres}
     ports:
       - 5432:5432
