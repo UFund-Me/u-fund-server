@@ -1,11 +1,20 @@
 import { HttpService } from "@nestjs/axios";
 import { Injectable, Logger } from "@nestjs/common";
 import { firstValueFrom } from "rxjs";
+import dayjs from "dayjs";
+import {
+  quotesIndicatorMapping,
+  IndicatorMapping,
+} from "./stock-quotes-indicator";
+import { StockQuotesRealTime } from "@prisma/client";
+import { PrismaService } from "@/core/database/prisma.service";
 
 @Injectable()
 export class StockQuotesService {
   private readonly logger = new Logger(StockQuotesService.name);
   private readonly httpService = new HttpService();
+
+  constructor(private readonly prismaService: PrismaService) {}
 
   /**
    * 沪深京 A 股-实时行情
@@ -50,5 +59,113 @@ export class StockQuotesService {
     }
   };
 
-  private readonly getStockQuotes = async () => {};
+  private readonly normalizeValue = (type: string, value: string) => {
+    if (type === "number") {
+      return Number(value);
+    }
+
+    return value;
+  };
+
+  private readonly arrayToObject = (array: any[]) => {
+    return array.reduce((acc, item) => {
+      acc[item.key] = item.value;
+      return acc;
+    }, {});
+  };
+
+  private readonly transformStockQuotes = (
+    stockQuotes: any,
+    indicatorMapping: IndicatorMapping,
+  ) => {
+    const keys = Object.keys(indicatorMapping);
+
+    return stockQuotes.map((item: any) =>
+      this.arrayToObject(
+        keys.map(key => {
+          const { type, map } = indicatorMapping[key];
+
+          return {
+            [key]: this.normalizeValue(type, item[map as string]),
+          };
+        }),
+      ),
+    );
+  };
+
+  // 清除超过7天的数据
+  public clearStockQuotes = async () => {
+    // 获取最近的股票数据记录，按日期降序排列并去重
+    const tradingDays = await this.prismaService.stockQuotesRealTime.findMany({
+      select: { date: true },
+      distinct: ["date"],
+      orderBy: { date: "desc" },
+    });
+
+    // 如果有超过7个交易日的数据
+    if (tradingDays.length > 7) {
+      // 获取第7个交易日的日期作为截止日期
+      const cutoffDate = tradingDays[6].date;
+
+      // 删除这个日期之前的所有数据
+      await this.prismaService.stockQuotesRealTime.deleteMany({
+        where: { date: { lt: cutoffDate } },
+      });
+    }
+  };
+
+  public seedStockQuotes = async (date?: string) => {
+    const currentDate = dayjs(date).format("YYYY-MM-DD");
+
+    try {
+      this.logger.log(`seed stock quotes start, date: ${currentDate}`);
+
+      const stockQuotes = await this.getRealtimeStockQuotes();
+
+      if (stockQuotes.length === 0) {
+        this.logger.log(`seed stock quotes end, date: ${currentDate}`);
+        return;
+      }
+
+      this.logger.log(`transform stock quotes start, date: ${currentDate}`);
+
+      let stocks = this.transformStockQuotes(
+        stockQuotes,
+        quotesIndicatorMapping,
+      ) as StockQuotesRealTime[];
+      // newPrice > 0, 过滤掉停牌的股票
+      stocks = stocks.filter(item => Number(item.newPrice) > 0);
+      // 添加日期
+      stocks = stocks.map(item => ({ ...item, date: currentDate }));
+
+      this.logger.log(`transform stock quotes end, stocks: ${stocks.length}`);
+
+      await this.prismaService.stockQuotesRealTime.createMany({
+        data: stocks,
+        skipDuplicates: true,
+      });
+
+      this.logger.log(`seed stock quotes end, date: ${currentDate}`);
+    } catch (error) {
+      this.logger.error(`seed stock quotes error: ${error}`);
+    }
+  };
+
+  public checkStockQuotes = async (date?: string) => {
+    const quotes = await this.prismaService.stockQuotesRealTime.findMany({
+      where: { date: dayjs(date).format("YYYY-MM-DD") },
+    });
+    return quotes.length > 0;
+  };
+
+  public initStockQuotes = async (date?: string) => {
+    const hasQuotes = await this.checkStockQuotes(date);
+
+    if (hasQuotes) {
+      this.logger.log(`has quotes, date: ${date}, skip seeding`);
+      return;
+    }
+
+    await this.seedStockQuotes(date);
+  };
 }
