@@ -1,6 +1,5 @@
 import { HttpService } from "@nestjs/axios";
 import { Injectable, Logger } from "@nestjs/common";
-import { Cron } from "@nestjs/schedule";
 import { firstValueFrom } from "rxjs";
 
 @Injectable()
